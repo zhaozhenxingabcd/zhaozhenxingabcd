@@ -1,0 +1,172 @@
+IIC 驱动学习
+https://blog.csdn.net/hyl1718/article/details/115537492    CSDN文档
+
+IIC 总线驱动重点是IIC适配器的驱动，用到2个数据结构 I2C_adapter ,  i2c_algorithm  
+i2c_adapter 结构体定义在 include/linux/i2c.h 中
+struct i2c_adapter{
+ struct module *owner;
+ unsigned int class; 
+ const struct i2c_algorithm *algo   /总线访问算法
+ void *algo_data;
+ ... ... 
+}
+
+i2c_algorithm 类型的指针变量 algo 对一个i2c适配器，要对外提供读写API函数，设备驱动程序可以使用API函数来完成读写操作，
+i2c_algorithm 就是i2c适配器与i2c设备进行通信方法
+struct i2c_algorithm {
+   ....
+  int (*master_xfer) （struct i2c_adapter *adap,  //master_xfer 就是 I2C 适配器的传输函数，可以通过此函数来完成与 IIC 设备之间的通信
+                                sturct i2c_msg  *msgs,
+                                int num）;
+
+ int (*smbus_xfer) (struct i2c_adapter *adap,  //smbus_xfer 就是 SMBUS 总线的传输函数
+                             u16 addr,
+                            unsigned short flags, 
+                            char read_write,
+                            u8 command, 
+                            int size, 
+                            union i2c_smbus_data *data);
+}
+综上所述， I2C 总线驱动，或者说 I2C 适配器驱动的主要工作就是初始化 i2c_adapter 结构体变量，
+然后设置 i2c_algorithm 中的 master_xfer 函数
+完成以后通过 i2c_add_numbered_adapter 或 i2c_add_adapter 这两个函数向系统注册设置好的 i2c_adapter，
+
+int i2c_add_adapter(struct i2c_adapter *adapter)   // i2c_add_adapter 使用动态的总线号
+int i2c_add_numbered_adapter(struct i2c_adapter *adap)  //i2c_add_numbered_adapter使用静态总线号 
+
+adapter 或 adap：要添加到 Linux 内核中的 i2c_adapter，也就是 I2C 适配器,  返回值： 0，成功；负值，失败
+
+如果要删除 I2C 适配器的话使用 i2c_del_adapter 函数即可，函数原型如下：
+void i2c_del_adapter(struct i2c_adapter * adap)
+函数参数和返回值含义如下： adap：要删除的 I2C 适配器   返回值： 无。
+
+---------I2C 设备驱动---------
+I2C 设备驱动重点关注两个数据结构： i2c_client 和 i2c_driver，
+
+i2c_client  就是描述设备信息的， 
+i2c_driver 描述驱动内容，类似于 platform_driver
+i2c_client 结构体定义在 include/linux/i2c.h 文件中，内容如下：
+struct i2c_client {
+  unsigned short flags; /* 标志 */
+  unsigned short addr; /* 芯片地址， 7 位，存在低 7 位*/
+......
+  char name[I2C_NAME_SIZE]; /* 名字 */
+  struct i2c_adapter *adapter; /* 对应的 I2C 适配器 */
+  struct device dev; /* 设备结构体 */
+  int irq; /* 中断 */
+  struct list_head detected;
+......
+ };
+一个设备对应一个 i2c_client，每检测到一个 I2C 设备就会给这个 I2C 设备分配一个i2c_client。
+
+---------i2c_driver 结构体---------
+i2c_driver 类似 platform_driver，是我们编写 I2C 设备驱动重点要处理的内容， i2c_driver 结
+构体定义在 include/linux/i2c.h 文件中，内容如下：
+---------------------------
+161 struct i2c_driver {
+162 unsigned int class;
+163
+164 /* Notifies the driver that a new bus has appeared. You should
+165 * avoid using this, it will be removed in a near future.
+166 */
+167 int (*attach_adapter)(struct i2c_adapter *) __deprecated;
+168
+169 /* Standard driver model interfaces */
+170 int (*probe)(struct i2c_client *, const struct i2c_device_id *);   //当 I2C 设备和驱动匹配成功以后 probe 函数就会执行，和 platform 驱动一样
+171 int (*remove)(struct i2c_client *);
+172
+173 /* driver model interfaces that don't relate to enumeration */
+174 void (*shutdown)(struct i2c_client *);
+175
+176 /* Alert callback, for example for the SMBus alert protocol.
+177 * The format and meaning of the data value depends on the
+178 * protocol.For the SMBus alert protocol, there is a single bit
+179 * of data passed as the alert response's low bit ("event
+180 flag"). */
+181 void (*alert)(struct i2c_client *, unsigned int data);
+
+183 /* a ioctl like command that can be used to perform specific
+184 * functions with the device.
+185 */
+186 int (*command)(struct i2c_client *client, unsigned int cmd,  void *arg);
+187
+188 struct device_driver driver;  //device_driver 驱动结构体，如果使用设备树的话，需要设置 device_driver 的of_match_table 成员变量，也就是驱动的兼容(compatible)属性
+        
+189 const struct i2c_device_id *id_table;  // id_table 是传统的、未使用设备树的设备匹配 ID 表。
+190
+191 /* Device detection callback for automatic device creation */
+192 int (*detect)(struct i2c_client *, struct i2c_board_info *);
+193 const unsigned short *address_list;
+194 struct list_head clients;
+195 };
+---------------------------
+ I2C 设备驱动编写人来说，重点工作就是构建 i2c_driver，构建完成以后需要向Linux 内核注册这个 i2c_driver。
+int i2c_register_driver(struct module *owner, struct i2c_driver *driver)
+函数参数和返回值含义如下：
+owner： 一般为 THIS_MODULE。
+driver：要注册的 i2c_driver。
+返回值： 0，成功；负值，失败。
+
+注销 I2C 设备驱动的时候需要将前面注册的 i2c_driver 从 Linux 内核中注销掉，需要用到
+i2c_del_driver 函数，此函数原型如下：
+void i2c_del_driver(struct i2c_driver *driver)
+函数参数和返回值含义如下：
+driver：要注销的 i2c_driver。
+返回值： 无。
+
+i2c_driver 的注册示例代码如下：
+
+/* i2c 驱动的 probe 函数 */
+static int xxx_probe(struct i2c_client *client,const struct i2c_device_id *id)
+{
+ /* 函数具体程序 */
+ return 0;
+ }
+
+/* i2c 驱动的 remove 函数 */
+ static int xxx_remove(struct i2c_client *client)
+ {
+ /* 函数具体程序 */
+ return 0;
+}
+
+/* 传统匹配方式 ID 列表 */   无设备树的时候匹配 ID 表
+static const struct i2c_device_id xxx_id[] = {
+ {"xxx", 0},
+ {}
+ };
+
+/* 设备树匹配列表 */   设备树所使用的匹配表
+ static const struct of_device_id xxx_of_match[] = {
+ { .compatible = "xxx" },
+ { /* Sentinel */ }
+ };
+
+/* i2c 驱动结构体 */   i2c_driver，当 I2C 设备和 I2C 驱动匹配成功以后 probe 函数就会执行
+static struct i2c_driver xxx_driver = {
+ .probe = xxx_probe,
+ .remove = xxx_remove,
+    .driver = {
+         .owner = THIS_MODULE,
+         .name = "xxx",
+         .of_match_table = xxx_of_match,
+                 },
+    .id_table = xxx_id,
+ };
+
+/* 驱动入口函数 */
+static int __init xxx_init(void)
+{
+    int ret = 0;
+    ret = i2c_add_driver(&xxx_driver);
+    return ret;
+}
+
+/* 驱动出口函数 */
+ static void __exit xxx_exit(void)
+ {
+ i2c_del_driver(&xxx_driver);
+ }
+
+module_init(xxx_init);
+module_exit(xxx_exit);
